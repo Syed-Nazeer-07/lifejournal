@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slow Stack Journal</title>
+    
+    <!-- Tailwind CSS (Styling) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts: Patrick Hand -->
+    <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { font-family: 'Patrick Hand', cursive; }
+        
+        /* Custom Scrollbar - Made Darker and Visible */
+        .custom-scrollbar::-webkit-scrollbar { height: 10px; width: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #a8a29e; border-radius: 5px; border: 2px solid #fdfbf7; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #78716c; }
+
+        /* Grid Paper Pattern - Applied globally */
+        .grid-paper {
+            background-color: #fdfbf7;
+            background-image: 
+                linear-gradient(to right, #e5e7eb 1px, transparent 1px),
+                linear-gradient(to bottom, #e5e7eb 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        /* Hide Scrollbar for clean look but allow scroll */
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="grid-paper h-screen w-screen flex flex-col overflow-hidden text-gray-800">
+
+    <!-- Navbar - Transparent & Integrated -->
+    <div class="w-full flex flex-col sm:flex-row justify-between items-center p-2 shrink-0 z-30">
+        <!-- Date Nav -->
+        <div id="date-nav" class="flex items-center gap-6 px-4 py-1 rounded-full transition-all duration-300">
+            <button id="prev-month" class="p-2 hover:bg-stone-200/50 rounded-full transition-colors text-gray-600">
+                <i data-lucide="chevron-left"></i>
+            </button>
+            <h1 id="month-label" class="text-4xl font-bold text-gray-800 tracking-wide min-w-[200px] text-center">Loading...</h1>
+            <button id="next-month" class="p-2 hover:bg-stone-200/50 rounded-full transition-colors text-gray-600">
+                <i data-lucide="chevron-right"></i>
+            </button>
+        </div>
+
+        <!-- All Logs Title (Visible only on All Logs view) -->
+        <div id="all-logs-title" class="hidden px-8 py-2 rounded-full">
+            <h1 class="text-3xl font-bold text-gray-800 tracking-wide">All Journal Entries</h1>
+        </div>
+
+        <!-- View & Status -->
+        <div class="flex items-center gap-4">
+            <div id="save-status" class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all opacity-0">
+                <i data-lucide="cloud" class="w-4 h-4"></i>
+                <span id="save-text">Saved</span>
+            </div>
+
+            <div class="flex p-1 rounded-xl gap-2">
+                <button id="btn-tracker" class="px-4 py-2 rounded-lg transition-all font-bold tracking-wide border-2 border-gray-800 text-gray-800 shadow-[2px_2px_0px_0px_rgba(0,0,0,0.8)] hover:translate-y-[1px] hover:shadow-[1px_1px_0px_0px_rgba(0,0,0,0.8)] active:translate-y-[2px] active:shadow-none bg-[#fdfbf7]">Tracker</button>
+                <button id="btn-journal" class="px-4 py-2 rounded-lg transition-all font-bold tracking-wide border-2 border-transparent text-gray-500 hover:text-gray-800 hover:bg-stone-200/50">Journal</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notebook Content Container -->
+    <div class="relative flex-1 w-full flex flex-col lg:flex-row overflow-hidden">
+        
+        <!-- Spine Effect -->
+        <div class="hidden lg:block absolute left-1/2 top-0 bottom-0 w-[3px] bg-black z-20 -ml-[1.5px]"></div>
+
+        <!-- APP CONTENT RENDER TARGET -->
+        <div id="app-content" class="w-full flex flex-col lg:flex-row h-full">
+            <!-- Content injected via JS -->
+        </div>
+
+    </div>
+
+    <!-- --- JAVASCRIPT LOGIC --- -->
+    <script type="module">
+        // Import Firebase from CDN
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+        import { getFirestore, doc, setDoc, onSnapshot, collection, getDocs, query } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+        // --- CONSTANTS ---
+        const DEFAULT_HABITS = ["Exercise", "8 Cups Water", "Journal", "Healthy Meal", "No Phone AM", "No Spend Day", "Invest", "Goal Plan", "Floss"];
+        const MILESTONES = [3, 7, 10, 15, 20, 25, 30]; // Adjusted for monthly view
+
+        // --- STATE ---
+        let user = null;
+        let currentDate = new Date();
+        let currentView = 'tracker'; // 'tracker' or 'journal'
+        let isSaving = false;
+        let isOnline = false; // Tracks if we are using Firebase or LocalStorage
+        
+        function getDefaultData() {
+            return {
+                habits: DEFAULT_HABITS,
+                monthlyGoal: '',
+                pastWins: '',
+                monthlyGoalsList: ['', '', ''],
+                monthlyGoalsProgress: [0, 0, 0],
+                // Removed noFapCarryOver as requested
+                days: {}
+            };
+        }
+
+        let monthData = getDefaultData();
+
+        // --- DOM ELEMENTS ---
+        const els = {
+            monthLabel: document.getElementById('month-label'),
+            dateNav: document.getElementById('date-nav'),
+            appContent: document.getElementById('app-content'),
+            btnTracker: document.getElementById('btn-tracker'),
+            btnJournal: document.getElementById('btn-journal'),
+            prevMonth: document.getElementById('prev-month'),
+            nextMonth: document.getElementById('next-month'),
+            saveStatus: document.getElementById('save-status'),
+            saveText: document.getElementById('save-text')
+        };
+
+        // --- INITIALIZATION ---
+        async function init() {
+            // 1. Initial Render (Show UI immediately with defaults or local data)
+            loadLocalData();
+            render();
+
+            // 2. Try Firebase connection
+            try {
+                // Check if config exists (it's inserted by the environment usually)
+                if (typeof __firebase_config !== 'undefined') {
+                    const firebaseConfig = JSON.parse(__firebase_config);
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                    
+                    const app = initializeApp(firebaseConfig);
+                    const auth = getAuth(app);
+                    const db = getFirestore(app);
+
+                    // Expose to global scope for helpers
+                    window.db = db;
+                    window.auth = auth;
+                    window.appId = appId;
+
+                    // Auth Logic
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    onAuthStateChanged(auth, (u) => {
+                        user = u;
+                        if (user) {
+                            isOnline = true;
+                            setupRealtimeListener(db, appId);
+                        }
+                    });
+                } else {
+                    throw new Error("No config");
+                }
+            } catch (err) {
+                console.log("Running in Local Mode (Offline). Using LocalStorage.");
+                isOnline = false;
+                render();
+            }
+        }
+
+        function setupRealtimeListener(db, appId) {
+            const monthKey = getCurrentMonthKey(currentDate);
+            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'journal_data', monthKey);
+
+            onSnapshot(docRef, (snap) => {
+                if(!isSaving) {
+                    if (snap.exists()) {
+                        const data = snap.data();
+                        monthData = { ...getDefaultData(), ...data, days: { ...data.days } };
+                    } else {
+                        const localKey = `slowstack_${monthKey}`;
+                        if(!localStorage.getItem(localKey)) {
+                           monthData = getDefaultData();
+                        }
+                    }
+                    render(true);
+                }
+            }, (err) => {
+                console.error("Data Sync Error:", err);
+            });
+        }
+
+        function loadLocalData() {
+            const monthKey = getCurrentMonthKey(currentDate);
+            const raw = localStorage.getItem(`slowstack_${monthKey}`);
+            if(raw) {
+                try {
+                    const parsed = JSON.parse(raw);
+                    monthData = { 
+                        ...getDefaultData(), 
+                        ...parsed, 
+                        days: { ...parsed.days } 
+                    };
+                } catch(e) {
+                    console.error("Corrupt local data", e);
+                    monthData = getDefaultData();
+                }
+            } else {
+                monthData = getDefaultData();
+            }
+        }
+
+        // --- RENDER LOGIC ---
+        function render(preserveScroll = false) {
+            // Save scroll positions
+            const scrollPositions = {};
+            if(preserveScroll) {
+                document.querySelectorAll('.overflow-y-auto, .overflow-x-auto').forEach((el, idx) => {
+                    scrollPositions[idx] = { top: el.scrollTop, left: el.scrollLeft };
+                });
+            }
+
+            // Update Header
+            els.monthLabel.textContent = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            
+            // Update Tab Styles
+            const activeClass = "px-4 py-2 rounded-lg transition-all font-bold tracking-wide border-2 border-gray-800 text-gray-800 shadow-[2px_2px_0px_0px_rgba(0,0,0,0.8)] bg-[#fdfbf7]";
+            const inactiveClass = "px-4 py-2 rounded-lg transition-all font-bold tracking-wide border-2 border-transparent text-gray-500 hover:text-gray-800 hover:bg-stone-200/50";
+
+            els.btnTracker.className = currentView === 'tracker' ? activeClass : inactiveClass;
+            els.btnJournal.className = currentView === 'journal' ? activeClass : inactiveClass;
+
+            // Render Content
+            if (currentView === 'tracker') {
+                els.appContent.innerHTML = renderTrackerHTML();
+            } else if (currentView === 'journal') {
+                els.appContent.innerHTML = renderJournalHTML();
+            }
+
+            // Re-initialize icons
+            if (window.lucide) lucide.createIcons();
+            
+            // Attach Events
+            attachDynamicEvents();
+
+            // Restore scroll positions
+            if(preserveScroll) {
+                document.querySelectorAll('.overflow-y-auto, .overflow-x-auto').forEach((el, idx) => {
+                    if(scrollPositions[idx]) {
+                        el.scrollTop = scrollPositions[idx].top;
+                        el.scrollLeft = scrollPositions[idx].left;
+                    }
+                });
+            }
+        }
+
+        // --- HELPERS FOR FUTURE CHECK ---
+        function isFutureDate(day) {
+            const realToday = new Date();
+            // Check if current view year > real year
+            if (currentDate.getFullYear() > realToday.getFullYear()) return true;
+            // Check if current view year is same but month is future
+            if (currentDate.getFullYear() === realToday.getFullYear() && currentDate.getMonth() > realToday.getMonth()) return true;
+            // Check if current view is same month same year, but day is future
+            if (currentDate.getFullYear() === realToday.getFullYear() && currentDate.getMonth() === realToday.getMonth() && day > realToday.getDate()) return true;
+            
+            return false;
+        }
+
+        // --- HTML GENERATORS ---
+
+        function renderTrackerHTML() {
+            const daysInMonth = getDaysInMonth(currentDate);
+            
+            // LEFT PAGE: Moments
+            let momentsHTML = `
+                <div class="flex-1 p-4 lg:pr-12 border-b lg:border-b-0 lg:border-r border-gray-300/50 flex flex-col relative h-full overflow-hidden">
+                    <div class="mb-6 flex justify-between items-baseline border-b-2 border-gray-800 pb-2">
+                        <h2 class="text-2xl font-bold text-gray-800 uppercase tracking-widest">Memorable Moments</h2>
+                        <span class="text-sm text-gray-500 font-bold">01 - ${daysInMonth}</span>
+                    </div>
+                    <div class="flex-1 overflow-y-auto custom-scrollbar pr-2">
+            `;
+
+            for (let i = 1; i <= daysInMonth; i++) {
+                const dayVal = monthData.days[i]?.memorableMoment || '';
+                const isToday = isDateToday(i);
+                const dayName = getDayName(i);
+                
+                momentsHTML += `
+                    <div class="flex items-center mb-1 group rounded px-1 transition-colors ${isToday ? 'bg-blue-50' : 'hover:bg-gray-50'}">
+                        <span class="w-14 text-sm font-bold shrink-0 font-mono pt-1 flex gap-2 ${isToday ? 'text-blue-600' : 'text-gray-400'}">
+                            <span>${String(i).padStart(2, '0')}</span>
+                            <span class="opacity-70">${dayName}</span>
+                        </span>
+                        <input type="text" value="${dayVal}" 
+                            data-action="update-moment" data-day="${i}"
+                            class="flex-1 bg-transparent border-b border-gray-200 focus:border-gray-400 outline-none text-gray-700 py-1 transition-colors text-lg"
+                        />
+                    </div>
+                `;
+            }
+
+            momentsHTML += `
+                    </div>
+                    <div class="mt-8 relative group shrink-0">
+                        <div class="absolute inset-0 bg-yellow-100 transform rotate-1 rounded shadow-sm group-hover:rotate-0 transition-transform duration-300"></div>
+                        <div class="relative bg-[#fffdf5] p-4 border border-yellow-200 shadow-sm rounded">
+                            <div class="text-xs font-bold text-yellow-600 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                <i data-lucide="undo-2" class="w-3 h-3"></i> Last Month's Wins
+                            </div>
+                            <textarea id="past-wins" class="w-full h-20 bg-transparent resize-none outline-none text-gray-700 leading-snug" placeholder="Reflect...">${monthData.pastWins}</textarea>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // RIGHT PAGE: Habits
+            let habitsHTML = `
+                <div class="flex-1 p-4 lg:pl-12 flex flex-col relative h-full overflow-hidden">
+                    <div class="flex justify-between items-end mb-8 border-b-2 border-gray-800 pb-2">
+                        <h2 class="text-2xl font-bold text-gray-800 uppercase tracking-widest">Daily Habits</h2>
+                        <div class="flex flex-col items-end">
+                            <label class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Top Priority</label>
+                            <input type="text" id="monthly-goal" value="${monthData.monthlyGoal}" placeholder="Focus..." 
+                                class="bg-transparent text-right outline-none text-indigo-600 font-bold w-48 border-b border-indigo-200 focus:border-indigo-500" />
+                        </div>
+                    </div>
+                    
+                    <div class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
+                        ${generateHabitGrid(daysInMonth)}
+                        ${generateNoFapTracker(daysInMonth)}
+                    </div>
+                </div>
+            `;
+
+            return momentsHTML + habitsHTML;
+        }
+
+        function generateHabitGrid(days) {
+            // Updated to ensure scrollbar is visible and accessible
+            let html = `<div class="overflow-x-auto custom-scrollbar pb-4 w-full mb-4 border-b border-gray-200"><div class="flex w-full min-w-full">`;
+            
+            // Days Column (Fixed Width)
+            html += `<div class="flex flex-col shrink-0 border-r border-gray-300 mr-1 sticky left-0 z-10 grid-paper">
+                <div style="height: 140px;" class="border-b border-gray-300 grid-paper"></div>`;
+            
+            for(let i=1; i<=days; i++) {
+                const isToday = isDateToday(i);
+                html += `<div style="height: 30px;" class="flex items-center justify-end pr-2 text-xs font-mono border-b border-gray-100 gap-2 ${isToday ? 'bg-blue-50 text-blue-600 font-bold' : 'text-gray-400'}">
+                    <span class="text-[10px] opacity-70 w-3 text-right">${getDayLetter(i)}</span>
+                    <span class="w-4 text-right">${i}</span>
+                </div>`;
+            }
+            html += `</div>`;
+
+            // Habits Columns (Fluid Width with Flex-Grow)
+            html += `<div class="flex w-full">`;
+            monthData.habits.forEach((habit, hIndex) => {
+                html += `<div class="flex flex-col items-center flex-1 min-w-[3rem] group/col">
+                    <div style="height: 140px;" class="w-full relative border-b border-gray-300 mb-1 group hover:bg-gray-50 transition-colors flex items-end justify-center pb-2">
+                        <div style="writing-mode: vertical-rl; transform: rotate(180deg);" class="text-center w-full flex items-center justify-center">
+                           <input type="text" value="${habit}" data-action="rename-habit" data-index="${hIndex}"
+                              class="bg-transparent outline-none text-sm text-gray-600 font-bold tracking-wide text-center hover:text-indigo-600 focus:text-indigo-600 w-full h-32" />
+                        </div>
+                    </div>`;
+                
+                for(let i=1; i<=days; i++) {
+                    const status = monthData.days[i]?.habitStatus?.[habit] || null;
+                    const isToday = isDateToday(i);
+                    const isFuture = isFutureDate(i);
+                    
+                    html += `<button 
+                        ${isFuture ? 'disabled' : `onclick="toggleHabit(${i}, '${habit}')"`} 
+                        style="height: 30px;" 
+                        class="w-full flex items-center justify-center border-b border-gray-100/50 transition-colors focus:outline-none 
+                        ${isToday ? 'bg-blue-50/30' : ''} 
+                        ${isFuture ? 'bg-gray-100/30 cursor-not-allowed opacity-50' : 'hover:bg-black/5 cursor-pointer'}">
+                        
+                        ${status === 'X' ? '<span class="text-red-500 text-2xl leading-none transform -rotate-12 font-bold pointer-events-none">X</span>' : 
+                          status === 'O' ? '<span class="text-green-500 text-xl leading-none font-bold pointer-events-none">O</span>' : 
+                          isFuture ? '' : '<span class="text-gray-300 text-[8px] opacity-0 hover:opacity-100">●</span>'}
+                    </button>`;
+                }
+                html += `</div>`;
+            });
+
+            // Add Habit Button
+            html += `<div class="flex flex-col items-center w-12 border-l border-gray-200/50 shrink-0">
+                 <div style="height: 140px;" class="w-full border-b border-gray-300 mb-1 flex items-end justify-center pb-4">
+                    <button id="add-habit-btn" class="w-8 h-8 rounded-full border-2 border-dashed border-gray-400 text-gray-400 flex items-center justify-center hover:border-indigo-600 hover:text-indigo-600 hover:bg-indigo-50">
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                    </button>
+                 </div>
+            </div>`;
+
+            html += `</div></div></div>`;
+            return html;
+        }
+
+        function generateNoFapTracker(days) {
+            // Calculate total clean days for this month only
+            const currentStreak = Object.values(monthData.days).filter(d => d.noFapClean).length;
+            const totalStreak = currentStreak; // Removed carryover addition
+            
+            let html = `
+                <div class="relative mt-12 min-w-[300px] border-t-2 border-gray-800 pt-6">
+                    <div class="flex justify-between items-start mb-6 px-4">
+                        <div>
+                           <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                             <i data-lucide="flame" class="text-orange-500 w-5 h-5"></i> No Fap Journey
+                           </h3>
+                           <p class="text-xs text-gray-500 mt-1">Mark daily if clean.</p>
+                        </div>
+                        <div class="bg-white/80 p-3 rounded-lg shadow-sm border border-gray-200 flex flex-col items-center min-w-[100px]">
+                           <span class="text-xs text-gray-400 uppercase font-bold tracking-wider">Days Clean</span>
+                           <div class="text-3xl font-bold text-indigo-600 leading-none mt-1">${totalStreak} <span class="text-sm text-gray-400 font-normal">days</span></div>
+                        </div>
+                    </div>
+                    
+                    <div class="relative px-2 mb-8 overflow-x-auto"><div class="flex items-center justify-between min-w-[500px] w-full py-4 relative">
+                        <div class="absolute left-4 right-4 h-1 bg-gray-200 top-1/2 -translate-y-1/2 z-0"></div>
+                        ${MILESTONES.map(m => {
+                            const isReached = totalStreak >= m;
+                            return `<div class="relative z-10 flex flex-col items-center group flex-1">
+                                <div class="w-8 h-8 rounded-full flex items-center justify-center border-2 transition-all ${isReached ? 'bg-yellow-400 border-yellow-500 shadow-md scale-110' : 'bg-white border-gray-300 text-gray-300'}">
+                                    ${isReached ? '<i data-lucide="trophy" class="w-3 h-3 text-yellow-800"></i>' : '<div class="w-2 h-2 rounded-full bg-gray-200"></div>'}
+                                </div>
+                                <span class="mt-2 text-xs font-bold ${isReached ? 'text-yellow-600' : 'text-gray-300'}">${m} Days</span>
+                            </div>`
+                        }).join('')}
+                    </div></div>
+
+                    <div class="mt-6">
+                        <label class="text-xs text-gray-400 font-bold uppercase block mb-2">Daily Check-in (Clean?)</label>
+                        <div class="flex flex-wrap gap-1">
+                            ${Array.from({length: days}).map((_, i) => {
+                                const d = i+1;
+                                const isClean = monthData.days[d]?.noFapClean;
+                                const isFuture = isFutureDate(d);
+                                return `<button 
+                                    ${isFuture ? 'disabled' : `onclick="toggleNoFap(${d})"`} 
+                                    class="w-8 h-8 flex items-center justify-center text-xs font-mono border rounded transition-all 
+                                    ${isClean ? 'bg-indigo-600 border-indigo-700 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-300'}
+                                    ${isFuture ? 'bg-gray-100 cursor-not-allowed opacity-50' : 'hover:border-gray-400'}
+                                    ">${d}</button>`
+                            }).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+            return html;
+        }
+
+        function renderJournalHTML() {
+            const daysInMonth = getDaysInMonth(currentDate);
+            
+            let html = `
+                <div class="flex-1 p-4 lg:pr-12 border-r border-gray-300/50 flex flex-col relative h-full">
+                    <h2 class="text-3xl font-bold text-gray-800 border-b-2 border-gray-800 mb-4 pb-2">Goals & Focus</h2>
+                    <div class="space-y-10">
+                        ${monthData.monthlyGoalsList.map((goal, idx) => {
+                            const progress = monthData.monthlyGoalsProgress[idx] || 0;
+                            return `
+                            <div class="relative group">
+                                <div class="flex items-center gap-4 mb-3">
+                                    <div class="w-8 h-8 rounded-lg bg-gray-100 border-2 border-gray-300 flex items-center justify-center"><span class="text-sm font-bold text-gray-400">${idx+1}</span></div>
+                                    <input type="text" value="${goal}" data-action="update-goal" data-index="${idx}" class="flex-1 bg-transparent border-b-2 border-gray-200 focus:border-gray-800 outline-none text-2xl text-gray-700" placeholder="Goal #${idx+1}" />
+                                </div>
+                                <div class="flex items-center gap-1 ml-12">
+                                    ${Array.from({length:10}).map((_, pi) => `
+                                        <button onclick="toggleGoalProgress(${idx}, ${pi})" class="h-5 flex-1 rounded-sm border border-gray-300 ${pi < progress ? 'bg-green-400 border-green-500' : 'bg-white'}"></button>
+                                    `).join('')}
+                                </div>
+                            </div>`
+                        }).join('')}
+                    </div>
+                    <div class="mt-auto pt-12 flex justify-center opacity-60"><p class="text-lg text-gray-600 italic">"The secret of your future is hidden in your daily routine."</p></div>
+                </div>
+
+                <div class="flex-1 p-4 lg:pl-12 flex flex-col relative h-full">
+                     <div class="border-b-2 border-gray-800 mb-2 pb-2 bg-[#fdfbf7] z-10"><h2 class="text-xl font-bold text-gray-600 uppercase tracking-widest">Daily Log</h2></div>
+                     <div class="flex-1 overflow-y-auto custom-scrollbar pl-4"><div class="space-y-10 pb-12">
+                     ${Array.from({length: daysInMonth}).map((_, i) => {
+                        const d = i+1;
+                        const isToday = isDateToday(d);
+                        const hasContent = monthData.days[d]?.journalEntry || monthData.days[d]?.gratefulFor || isToday;
+                        if(!hasContent) return '';
+                        
+                        return `
+                        <div class="relative pl-8 border-l-4 transition-colors ${isToday ? 'border-blue-300 bg-blue-50/20 py-2 -ml-2 pr-2 rounded' : 'border-indigo-100 hover:border-indigo-300'}">
+                            <div class="absolute -left-[13px] top-0 w-5 h-5 rounded-full border-2 ${isToday ? 'bg-blue-500 border-blue-600' : 'bg-indigo-50 border-indigo-200'}"></div>
+                            <div class="flex justify-between items-baseline mb-3">
+                                <h3 class="text-xl font-bold ${isToday ? 'text-blue-800' : 'text-gray-800'}">${formatDate(d)}</h3>
+                                <input type="text" value="${monthData.days[d]?.entryTime || ''}" placeholder="Time" data-action="update-time" data-day="${d}" class="text-right text-sm text-gray-400 bg-transparent outline-none w-24 hover:text-indigo-500" />
+                            </div>
+                            <div class="space-y-3">
+                                <textarea data-action="update-entry" data-day="${d}" placeholder="Journal entry..." class="w-full bg-transparent resize-none outline-none text-gray-800 text-lg leading-relaxed border-b border-transparent focus:border-gray-200 min-h-[80px]">${monthData.days[d]?.journalEntry || ''}</textarea>
+                                <div class="flex items-start gap-3 bg-orange-50/50 p-3 rounded-lg -ml-2">
+                                    <span class="text-orange-400 text-xl mt-0.5">★</span>
+                                    <textarea data-action="update-grateful" data-day="${d}" placeholder="I am grateful for..." class="flex-1 bg-transparent resize-none outline-none text-gray-600 min-h-[40px] leading-relaxed italic">${monthData.days[d]?.gratefulFor || ''}</textarea>
+                                </div>
+                            </div>
+                        </div>`
+                     }).join('')}
+                     </div>
+                     </div>                </div>
+            `;
+            return html;
+        }
+
+        // --- EVENT HANDLERS ---
+        
+        // Delegated events for dynamic elements
+        function attachDynamicEvents() {
+            // Inputs: Moments, Habit Names, Goal Names, Journals
+            document.querySelectorAll('input, textarea').forEach(el => {
+                el.addEventListener('change', (e) => {
+                    const action = e.target.dataset.action;
+                    if(action === 'update-moment') updateDay(e.target.dataset.day, 'memorableMoment', e.target.value);
+                    if(action === 'rename-habit') renameHabit(e.target.dataset.index, e.target.value);
+                    if(action === 'update-goal') updateGoal(e.target.dataset.index, e.target.value);
+                    if(action === 'update-time') updateDay(e.target.dataset.day, 'entryTime', e.target.value);
+                    if(action === 'update-entry') updateDay(e.target.dataset.day, 'journalEntry', e.target.value);
+                    if(action === 'update-grateful') updateDay(e.target.dataset.day, 'gratefulFor', e.target.value);
+                    if(e.target.id === 'monthly-goal') saveData({ ...monthData, monthlyGoal: e.target.value });
+                    if(e.target.id === 'past-wins') saveData({ ...monthData, pastWins: e.target.value });
+                });
+            });
+
+            // Buttons that don't pass through onclick
+            const addHabitBtn = document.getElementById('add-habit-btn');
+            if(addHabitBtn) addHabitBtn.onclick = () => {
+                const newHabits = [...monthData.habits, "New Habit"];
+                saveData({ ...monthData, habits: newHabits });
+            };
+        }
+
+        // Exposed Global Functions for HTML onClick attributes
+        window.toggleHabit = (day, habit) => {
+            const currentStatus = monthData.days[day]?.habitStatus?.[habit];
+            let next = null;
+            if(!currentStatus) next = 'X';
+            else if(currentStatus === 'X') next = 'O';
+            
+            const newDayData = { ...monthData.days[day], habitStatus: { ...(monthData.days[day]?.habitStatus || {}), [habit]: next } };
+            saveData({ ...monthData, days: { ...monthData.days, [day]: newDayData } });
+        };
+
+        window.toggleNoFap = (day) => {
+            const current = monthData.days[day]?.noFapClean;
+            updateDay(day, 'noFapClean', !current);
+        };
+
+        window.toggleGoalProgress = (idx, segIdx) => {
+            const current = monthData.monthlyGoalsProgress[idx] || 0;
+            const clicked = segIdx + 1;
+            const newVal = (current === clicked) ? 0 : clicked;
+            const newProg = [...monthData.monthlyGoalsProgress];
+            newProg[idx] = newVal;
+            saveData({ ...monthData, monthlyGoalsProgress: newProg });
+        };
+
+        function updateDay(day, field, val) {
+            const newDay = { ...(monthData.days[day] || {}), [field]: val };
+            saveData({ ...monthData, days: { ...monthData.days, [day]: newDay } });
+        }
+
+        function renameHabit(idx, val) {
+            const h = [...monthData.habits];
+            h[idx] = val;
+            saveData({ ...monthData, habits: h });
+        }
+
+        function updateGoal(idx, val) {
+            const g = [...monthData.monthlyGoalsList];
+            g[idx] = val;
+            saveData({ ...monthData, monthlyGoalsList: g });
+        }
+
+        // --- CORE UTILS ---
+        
+        async function saveData(newData) {
+            // 1. Optimistic UI Update (Instant feedback)
+            monthData = newData;
+            // Only re-render if we are NOT in all logs view to avoid jumping
+            if (currentView !== 'all') render(true); 
+
+            // 2. Status Indicator
+            els.saveStatus.className = "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all bg-blue-50 text-blue-600 opacity-100";
+            els.saveText.innerText = "Saving...";
+            isSaving = true;
+
+            // 3. Save Logic
+            try {
+                const monthKey = getCurrentMonthKey(currentDate);
+
+                // ALWAYS save to LocalStorage (Offline Backup)
+                localStorage.setItem(`slowstack_${monthKey}`, JSON.stringify(newData));
+
+                // If Online, save to Firebase
+                if(isOnline && user && window.db) {
+                    const docRef = doc(window.db, 'artifacts', window.appId, 'users', user.uid, 'journal_data', monthKey);
+                    await setDoc(docRef, newData, { merge: true });
+                } else {
+                    // Fake delay for local feel
+                    await new Promise(r => setTimeout(r, 300));
+                }
+                
+                // Success UI
+                els.saveStatus.className = "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all bg-green-100 text-green-700 opacity-100";
+                els.saveText.innerText = "Saved";
+                setTimeout(() => { if(!isSaving) els.saveStatus.classList.add('opacity-0'); }, 2000);
+
+            } catch(e) {
+                console.error(e);
+                els.saveStatus.className = "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all bg-red-100 text-red-600 opacity-100";
+                els.saveText.innerText = "Error";
+            }
+            isSaving = false;
+        }
+
+        function getCurrentMonthKey(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`; }
+        function getDaysInMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); }
+        function isDateToday(d) { 
+            const now = new Date();
+            return now.getDate() === d && now.getMonth() === currentDate.getMonth() && now.getFullYear() === currentDate.getFullYear(); 
+        }
+        function getDayName(d) { return new Date(currentDate.getFullYear(), currentDate.getMonth(), d).toLocaleDateString('en-US', { weekday: 'short' }); }
+        function getDayLetter(d) { return new Date(currentDate.getFullYear(), currentDate.getMonth(), d).toLocaleDateString('en-US', { weekday: 'narrow' }); }
+        function formatDate(d) { return new Date(currentDate.getFullYear(), currentDate.getMonth(), d).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }); }
+
+        // --- NAVIGATION LISTENERS ---
+        els.prevMonth.onclick = () => { 
+            currentDate.setMonth(currentDate.getMonth() - 1); 
+            if(isOnline) {
+                if(window.db && user) setupRealtimeListener(window.db, window.appId); 
+            } else {
+                loadLocalData();
+            }
+            render();
+        };
+        els.nextMonth.onclick = () => { 
+            currentDate.setMonth(currentDate.getMonth() + 1); 
+            if(isOnline) {
+                if(window.db && user) setupRealtimeListener(window.db, window.appId); 
+            } else {
+                loadLocalData();
+            }
+            render();
+        };
+        els.btnTracker.onclick = () => { currentView = 'tracker'; render(); };
+        els.btnJournal.onclick = () => { currentView = 'journal'; render(); };
+
+        // --- START ---
+        init();
+
+    </script>
+</body>
+</html>
